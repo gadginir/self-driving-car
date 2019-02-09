@@ -2,14 +2,15 @@ import tensorflow as tf
 import numpy as np
 import os
 from PIL import Image
+import random
 import car_drive
 
 #######################################################
 ########## Hyper parameters of DQN  ###################
 #######################################################
 
-input_height = 88
-input_width = 80
+input_height = 65
+input_width = 120
 input_channels = 1
 
 conv_n_maps = [32, 64, 64]
@@ -18,10 +19,10 @@ conv_strides = [4, 2, 1]
 conv_paddings = ["SAME"] * 3
 conv_activation = [tf.nn.relu] * 3
 
-n_hidden_in = 64 * 11 * 10 #conv3 has 64 maps of 11X10 each
+n_hidden_in = 8640 #64 * 11 * 10 #conv3 has 64 maps of 11X10 each
 n_hidden = 512
 hidden_activation = tf.nn.relu
-n_outputs = 3 # 3 actions are available FORWARD, LEFT, RIGHT
+n_outputs = 4 # 3 actions are available FORWARD, LEFT, RIGHT, BACKWARD
 initializer = tf.contrib.layers.variance_scaling_initializer()
 
 #######################################################
@@ -53,19 +54,19 @@ def q_network(X_state, name):
 # Create input placeholder, 2 DQN 
 # and copy  Critic DQN into Actor DQN
 #######################################################
-X_state = tf.placeholder(tf.float32, shape = [None, input_height, input_width, input_channels])
+X_state = tf.placeholder(tf.float32, shape=[None, input_height, input_width,
+                                            input_channels])
+online_q_values, online_vars = q_network(X_state, name="q_networks/online")
+target_q_values, target_vars = q_network(X_state, name="q_networks/target")
 
-actor_q_values, actor_vars = q_network(X_state, name = "q_networks/actor")
-critic_q_values, critic_vars = q_network(X_state, name = "q_networks/critic")
-
-copy_ops = [actor_var.assign(critic_vars[var_name])
-            for var_name, actor_var in actor_vars.items()]
-copy_critic_to_actor = tf.group(*copy_ops)
+copy_ops = [target_var.assign(online_vars[var_name])
+            for var_name, target_var in target_vars.items()]
+copy_online_to_target = tf.group(*copy_ops)
 
 
 ####### One hot vector ###########
 X_action = tf.placeholder(tf.int32, shape=[None])
-q_value = tf.reduce_sum(critic_q_values * tf.one_hot(X_action, n_outputs), axis = 1, keepdims = True)
+q_value = tf.reduce_sum(target_q_values * tf.one_hot(X_action, n_outputs), axis = 1, keepdims = True)
 
 ###### Add training option, and define init and Saver operation #########
 learning_rate = 0.001
@@ -74,7 +75,7 @@ momentum = 0.95
 with tf.variable_scope("train"):
     X_action = tf.placeholder(tf.int32, shape=[None])
     y = tf.placeholder(tf.float32, shape=[None, 1])
-    q_value = tf.reduce_sum(actor_q_values * tf.one_hot(X_action, n_outputs),
+    q_value = tf.reduce_sum(online_q_values * tf.one_hot(X_action, n_outputs),
                             axis=1, keepdims=True)
     error = tf.abs(y - q_value)
     clipped_error = tf.clip_by_value(error, 0.0, 1.0)
@@ -138,13 +139,13 @@ def epsilon_greedy(q_values, step):
 n_steps = 4000000  # total number of training steps
 training_start = 10000  # start training after 10,000 game iterations
 training_interval = 4  # run a training step every 4 game iterations
-save_steps = 1000  # save the model every 1,000 training steps
+save_steps = 500  # save the model every 1,000 training steps
 copy_steps = 10000  # copy online DQN to target DQN every 10,000 training steps
 discount_rate = 0.99
 skip_start = 90  # Skip the start of every game (it's just waiting time).
 batch_size = 50
 iteration = 0  # game iterations
-checkpoint_path = "./my_dqn.ckpt"
+checkpoint_path = "./self_drive_dqn.ckpt"
 done = True # env needs to be reset
 
 # A few variables for tracking progress:
@@ -159,7 +160,7 @@ with tf.Session() as sess:
         saver.restore(sess, checkpoint_path)
     else:
         init.run()
-        copy_critic_to_actor.run()
+        copy_online_to_target.run()
     while True:
         step = global_step.eval()
         if step >= n_steps:
@@ -167,18 +168,24 @@ with tf.Session() as sess:
         iteration += 1
         print(iteration, step, n_steps, step * 100 / n_steps, loss_val, mean_max_q)
         if done: # game over, start again
-            obs = env.reset()
-            for skip in range(skip_start): # skip the start of each game
+            #obs = env.reset()
+            game_state = car_drive.GameState()
+            _, _, _ = game_state.frame_step((2))
+
+            reward, state, done = game_state.frame_step((random.randint(0, 4)))
+
+            '''for skip in range(skip_start): # skip the start of each game
                 obs, reward, done, info = env.step(0)
-            state = preprocess_observation(obs)
+            state = preprocess_observation()'''
 
         # Online DQN evaluates what to do
-        q_values = actor_q_values.eval(feed_dict={X_state: [state]})
+        q_values = online_q_values.eval(feed_dict={X_state: [state]})
         action = epsilon_greedy(q_values, step)
 
         # Online DQN plays
-        obs, reward, done, info = env.step(action)
-        next_state = preprocess_observation(obs)
+        #obs, reward, done, info = env.step(action)
+        reward, next_state, done = game_state.frame_step(action)
+        #next_state = preprocess_observation()
 
         # Let's memorize what happened
         replay_memory.append((state, action, reward, next_state, 1.0 - done))
@@ -198,7 +205,7 @@ with tf.Session() as sess:
         # Sample memories and use the target DQN to produce the target Q-Value
         X_state_val, X_action_val, rewards, X_next_state_val, continues = (
             sample_memories(batch_size))
-        next_q_values = critic_q_values.eval(
+        next_q_values = target_q_values.eval(
             feed_dict={X_state: X_next_state_val})
         max_next_q_values = np.max(next_q_values, axis=1, keepdims=True)
         y_val = rewards + continues * discount_rate * max_next_q_values
@@ -209,7 +216,7 @@ with tf.Session() as sess:
 
         # Regularly copy the online DQN to the target DQN
         if step % copy_steps == 0:
-            copy_critic_to_actor.run()
+            copy_online_to_target.run()
 
         # And save regularly
         if step % save_steps == 0:
