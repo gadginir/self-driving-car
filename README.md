@@ -1,6 +1,6 @@
 # self-driving-car
 
-Training model is based on an Actor-Critic model which was first introduced by DeepMind for its GO game. It not only takes much lesser training time but also produce highly efficient model which can interact with environment and predict best possible action. It is also well defined in Aurélien Géron's "Hands on scikit learn and tensorflow" books
+Training model is based on an Actor-Critic model which was first introduced by DeepMind for its GO game. It not only takes much lesser training time but also produce highly efficient model which can interact with environment and predict best possible action. It is also well defined in Aurélien Géron's "Hands on scikit learn and tensorflow" book
 
 The images feed to network has below details.
 
